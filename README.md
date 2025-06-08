@@ -1,6 +1,6 @@
 # Hedging-against-Trump
 
-Analyzes how ASEAN states “hedged” between the U.S. and China during the Trump presidency (2017–2020). Tests whether Trump’s policies shifted trade dependencies, military spending, and diplomatic alignment in Southeast Asia.
+A final data-analysis project for the ETH Comaprative and European Politics seminar. Analyzes how ASEAN states “hedged” between the U.S. and China during the Trump presidency (2017–2020). Tests whether Trump’s policies shifted trade dependencies, military spending, and diplomatic alignment in Southeast Asia.
 
 
 ## Motivation
@@ -66,6 +66,7 @@ SIPRI Military Expenditure Database. (2024). Stockholm International Peace Resea
 ### 6. UN General Assembly Ideal Point Distances  
 **Source:**  
 Bailey, M. A., Strezhnev, A., & Voeten, E. (2017). Estimating dynamic state preferences from United Nations voting data. Journal of Conflict Resolution, 61(2), 430–456. http://www.jstor.org/stable/26363889
+- *Note:* Do to file size, only the preprocessed and suabsetted data file included in Data folder
 
 **Variable:**  
 - `IdealPointDist` = absolute distance between U.S. and country i ideal points (lower = closer alignment).
@@ -161,19 +162,25 @@ All three hypotheses are **falsified**. Trump’s presidency did **not** produce
    cd Hedging-against-Trump
    ```
    
-### 3. Install R Packages
+### 2. Install R Packages
 In R
 ```r
 install.packages(c(
+  "car",
+  "countrycode",
+  "fixest",
+  "lubridate",
+  "readxl",
   "tidyverse",
-  "haven",
-  "stargazer"
+  "zoo"
 ))
 ```
 
-### 4. Render the R Markdown 
+### 3. Render the R Markdown 
 In R
 ```r
 rmarkdown::render("Hedging-against-Trump.Rmd")
 ```
+
+## License: All rights reserved
 
