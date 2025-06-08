@@ -1,0 +1,608 @@
+---
+title: "Hedging-against-Trump"
+output: html_document
+date: "2024-07-12"
+---
+# Load Packages
+```{r}
+library(car)
+library(countrycode)
+library(fixest)
+library(lubridate)
+library(readxl)
+library(tidyverse)
+library(zoo)
+
+```
+
+
+# Create Functions
+```{r}
+# Month Converter
+convert_month <- function(month_num_str) {
+  month_num <- as.numeric(sub("...", "", month_num_str, fixed = TRUE))
+  date <- ymd("2010-12-01") %m+% months(month_num - 1)
+  format(date, "%m-%Y")
+}
+
+# Symbol remover
+remove_e_r <- function(x) {
+  gsub("[er,]", "", x)
+}
+
+```
+
+# Trade Dependence Data Frames + Cleaning 
+```{r}
+# Reading in trade data
+Brunei_exports_raw <- read_excel("Data/Exports_and_Imports_Brunei Darussalam.xlsx", sheet = "Exports, FOB")
+Brunei_imports_raw <- read_excel("Data/Exports_and_Imports_Brunei Darussalam.xlsx", sheet = "Imports, CIF")
+Cambodia_exports_raw <- read_excel("Data/Exports_and_Imports_Cambodia.xlsx", sheet = "Exports, FOB")
+Cambodia_imports_raw <- read_excel("Data/Exports_and_Imports_Cambodia.xlsx", sheet = "Imports, CIF")
+Indonesia_exports_raw <- read_excel("Data/Exports_and_Imports_Indonesia.xlsx", sheet = "Exports, FOB")
+Indonesia_imports_raw <- read_excel("Data/Exports_and_Imports_Indonesia.xlsx", sheet = "Imports, CIF")
+Lao_exports_raw <- read_excel("Data/Exports_and_Imports_Lao People's Dem. Rep.xlsx", sheet = "Exports, FOB")
+Lao_imports_raw <- read_excel("Data/Exports_and_Imports_Lao People's Dem. Rep.xlsx", sheet = "Imports, CIF")
+Malaysia_exports_raw <- read_excel("Data/Exports_and_Imports_Malaysia.xlsx", sheet = "Exports, FOB")
+Malaysia_imports_raw <- read_excel("Data/Exports_and_Imports_Malaysia.xlsx", sheet = "Imports, CIF")
+Myanmar_exports_raw <- read_excel("Data/Exports_and_Imports_Myanmar.xlsx", sheet = "Exports, FOB")
+Myanmar_imports_raw <- read_excel("Data/Exports_and_Imports_Myanmar.xlsx", sheet = "Imports, CIF")
+Philippines_exports_raw <- read_excel("Data/Exports_and_Imports_Philippines.xlsx", sheet = "Exports, FOB")
+Philippines_imports_raw <- read_excel("Data/Exports_and_Imports_Philippines.xlsx", sheet = "Imports, CIF")
+Singapore_exports_raw <- read_excel("Data/Exports_and_Imports_Singapore.xlsx", sheet = "Exports, FOB")
+Singapore_imports_raw <- read_excel("Data/Exports_and_Imports_Singapore.xlsx", sheet = "Imports, CIF")
+Thailand_exports_raw <- read_excel("Data/Exports_and_Imports_Thailand.xlsx", sheet = "Exports, FOB")
+Thailand_imports_raw <- read_excel("Data/Exports_and_Imports_Thailand.xlsx", sheet = "Imports, CIF")
+Vietnam_exports_raw <- read_excel("Data/Exports_and_Imports_Vietnam.xlsx", sheet = "Exports, FOB")
+Vietnam_imports_raw <- read_excel("Data/Exports_and_Imports_Vietnam.xlsx", sheet = "Imports, CIF")
+
+# Function that returns a long tibble
+process_trade <- function(df, country, type, keep_vec) {
+  # determine the original column to mutate / rename
+  col_orig <- if (type == "exports") {
+    "Exports, FOB to Partner Countries"
+  } else {
+    "Imports, CIF from Partner Countries"
+  }
+  
+  df %>%
+    # relabel 5th row as "Date"
+    mutate(
+      !!col_orig := if_else(row_number() == 5, "Date", .data[[col_orig]])
+    ) %>%
+    # filter to only the countries/dates we care about
+    filter(.data[[col_orig]] %in% keep_vec) %>%
+    # rename that key column to Country
+    rename(Country = all_of(col_orig)) %>%
+    # pivot long, dynamically naming the value column like "Brunei_exports"
+    pivot_longer(
+      cols      = -Country,
+      names_to  = "Month",
+      values_to = paste0(country, "_", type)
+    ) %>%
+    # drop the "Date" row now that it’s only used as a header marker
+    filter(Country != "Date")
+}
+
+# Keep important columns
+keep_colums <- c("Date", "World", "United States", "China, P.R.: Mainland")
+
+raw_list <- list(
+  Brunei_exports_raw   = Brunei_exports_raw,
+  Brunei_imports_raw   = Brunei_imports_raw,
+  Cambodia_exports_raw = Cambodia_exports_raw,
+  Cambodia_imports_raw = Cambodia_imports_raw,
+  Indonesia_exports_raw = Indonesia_exports_raw,
+  Indonesia_imports_raw = Indonesia_imports_raw,
+  Lao_exports_raw = Lao_exports_raw,
+  Lao_imports_raw = Lao_imports_raw,
+  Malaysia_exports_raw = Malaysia_exports_raw,
+  Malaysia_imports_raw = Malaysia_imports_raw,
+  Myanmar_exports_raw = Myanmar_exports_raw,
+  Myanmar_imports_raw = Myanmar_imports_raw,
+  Philippines_exports_raw = Philippines_exports_raw,
+  Philippines_imports_raw = Philippines_imports_raw,
+  Singapore_exports_raw = Singapore_exports_raw,
+  Singapore_imports_raw = Singapore_imports_raw,
+  Thailand_exports_raw = Thailand_exports_raw,
+  Thailand_imports_raw = Thailand_imports_raw,
+  Vietnam_exports_raw = Vietnam_exports_raw, 
+  Vietnam_imports_raw = Vietnam_imports_raw
+)
+
+# Map over list
+processed_list <- imap(raw_list, function(df, nm) {
+  parts  <- strsplit(nm, "_")[[1]]
+  country <- parts[1]
+  type    <- parts[2]
+  process_trade(df, country, type, keep_colums)
+})
+
+# Stitch them all together 
+trade_combined <- reduce(processed_list, full_join, by = c("Country","Month"))
+
+# Convert  Month strings into a consistent format
+trade_combined_c <- trade_combined %>%
+  mutate(Month = sapply(Month, convert_month))
+
+# Clean up any lingering “er” characters
+trade_combined_clean <- trade_combined_c %>%
+  mutate(across(where(is.character) & !any_of("Country"), remove_e_r))
+
+# Pivot into long format
+df_long <- trade_combined_clean %>%
+  pivot_longer(cols = ends_with("_exports") | ends_with("_imports"),
+               names_to = c("Country_2", "Trade_Type"),
+                names_pattern = "(.*)_(exports|imports)") %>%
+  # standardize column names
+  rename(Country = Country_2, Partner = Country, Month = Month, Value = value) %>% 
+  select(Country, Partner, Month, Value, Trade_Type) %>% 
+  mutate(Value = as.numeric(Value))
+
+# Compute total trade  
+df_total_trade <- df_long %>%
+  group_by(Month, Country, Partner) %>%
+  summarise(total_trade = sum(Value), .groups = 'drop')
+
+# Isolate “World” to compute dependencies
+df_world_trade <- df_total_trade %>%
+  filter(Partner == "World") %>%
+  select(Month, Country, world_trade = total_trade)
+
+# Join back to get share of each partner in total world trade
+df_trade_dependency <- df_total_trade %>%
+  left_join(df_world_trade, by = c("Month", "Country")) %>%
+  mutate(trade_dependency = total_trade / world_trade) %>%
+  select(Month, Country, Partner, trade_dependency) %>% 
+  filter(Partner != "World")
+
+# Extract the year portion from the Month column
+df_trade_dependency$Year <- substring(df_trade_dependency$Month, first = 4, last = 7)
+
+# Convert Year to numeric
+df_trade_dependency <- df_trade_dependency %>% 
+  mutate(Year = as.numeric(Year))
+
+ # Prepend "01-" to Month values to represent the first day of each month 
+df_trade_dependency <- df_trade_dependency %>%
+  mutate(Month = paste0("01-", Month))
+
+# Convert the Month string into a proper Date object
+df_trade_dependency <- df_trade_dependency %>%
+  mutate(Date = as.Date(Month, format = "%d-%m-%Y"))
+
+# Remove the original Month column 
+df_trade_dependency <- df_trade_dependency %>%
+  select(-Month)
+
+# Create subset of data for trade with China
+trade_china <- df_trade_dependency %>% 
+  filter(Partner == "China, P.R.: Mainland")
+
+# Create subset of data for trade with the United States
+trade_us <- df_trade_dependency %>% 
+  filter(Partner == "United States")
+
+```
+
+# FDI Data Frames + Cleaning 
+```{r}
+# Impute FDI values
+FDI_China_Brunei <- data.frame(
+  Country = c("Brunei"),
+  Partner = c("China, P.R.: Mainland"),
+  Year = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022),
+  China_FDI = c(20.110, 0.990, 8.520, -3.280, 3.920, 142.100, 71.360, -15.090,
+                     -4.050, 16.580, 3.750, 4.160)
+)
+
+FDI_China_Cambodia <- data.frame(
+  Country = c("Cambodia"),
+  Partner = c("China, P.R.: Mainland"),
+  Year = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022),
+  China_FDI = c(566.020, 559.66, 499.330, 438.270, 419.680, 625.670, 744.240,
+                     778.340, 746.250, 956.420, 466.750, 630.000
+  )
+)
+
+FDI_China_Indonesia<- data.frame(
+  Country = c("Indonesia"),
+  Partner = c("China, P.R.: Mainland"),
+  Year = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022),
+  China_FDI = c(592.190, 1361.290, 1563.380, 1271.980, 1450.507, 1460.880,
+                     1682.245, 1864.823, 2223.085, 2198.353, 4372.510,
+                     4550
+  )
+)
+
+FDI_China_Lao<- data.frame(
+  Country = c("Lao"),
+  Partner = c("China, P.R.: Mainland"),
+  Year = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022),
+  China_FDI = c(458.520, 808.802, 781.480, 1026.900, 517.210, 387.580,
+                     1219.950, 1241.790, 1149.080, 1454.300, 1282.320, 253.430
+  )
+)
+
+FDI_China_Malaysia<- data.frame(
+  Country = c("Malaysia"),
+  Partner = c("China, P.R.: Mainland"),
+  Year = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022),
+  China_FDI = c(95.130, 199.040, 616.38, 521.34, 488.91, 1829.960, 1722.140,
+                     1662.700, 1109.540, 1374.410, 1340, 1610
+  )
+)
+
+FDI_China_Myanmar<- data.frame(
+  Country = c("Myanmar"),
+  Partner = c("China, P.R.: Mainland"),
+  Year = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022),
+  China_FDI = c(217.820, 748.960, 475.330, 343.130, 331.720, 287.690, 428.180, -197.240, -41.940, 250.8, 18.46, 61.98
+  )
+)
+
+FDI_China_Philippines<- data.frame(
+  Country = c("Philippines"),
+  Partner = c("China, P.R.: Mainland"),
+  Year = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022),
+  China_FDI = c(267.190, 74.9, 54.5, 224.95, -27.59, 32.21, 108.840, 58.820,
+                    -4.29, 130.43, 152.86, 270.89
+                    )
+)
+
+FDI_China_Singapore<- data.frame(
+  Country = c("Singapore"),
+  Partner = c("China, P.R.: Mainland"),
+  Year = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022),
+  China_FDI = c(3268.96, 1518.75, 2032.67, 2813.630, 10452.48, 3171.86, 
+                     6319.902, 6411.257, 4825.673, 5923.350, 8405.04, 8300
+                    )
+)
+
+FDI_China_Thailand<- data.frame(
+  Country = c("Thailand"),
+  Partner = c("China, P.R.: Mainland"),
+  Year = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022),
+  China_FDI = c(230.110, 478.6, 755.19, 839.46, 407.24, 1121.69, 1057.589,
+                     737.288, 1371.906, 1882.876, 1486.01, 1270
+                    )
+)
+
+FDI_China_Vietnam<- data.frame(
+  Country = c("Vietnam"),
+  Partner = c("China, P.R.: Mainland"),
+  Year = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022),
+  China_FDI = c(189.19, 349.430, 380.5, 332.89, 560.17, 1279.04, 764.4, 1150.831,
+                1648.515, 1875.746, 2207.62, 1700
+                    )
+)
+
+
+FDI_China <- rbind(FDI_China_Brunei, FDI_China_Cambodia, FDI_China_Indonesia,
+            FDI_China_Lao, FDI_China_Malaysia, FDI_China_Myanmar,
+            FDI_China_Philippines, FDI_China_Singapore, FDI_China_Thailand,
+            FDI_China_Vietnam
+            )
+
+FDI_China <- FDI_China %>% 
+  select(Country, Year, China_FDI)
+
+
+FDI_US_raw <- read_xlsx("Data/OECD.DAF.INV,DSD_FDI@DF_FDI_CTRY_IND_SUMM,,filtered,2024-07-18 17-10-15.xlsx")
+
+FDI_US_raw_2 <- FDI_US_raw %>% slice(-(1:6))
+
+FDI_US_raw_new_colnames <- c("Meassure", "Year", "Country", "x", "US_FDI", "y")
+
+FDI_US_raw_3 <- FDI_US_raw_2  %>% rename_all(~ FDI_US_raw_new_colnames)
+
+FDI_US <- FDI_US_raw_3 %>% 
+  filter(US_FDI != "C ..",
+         Meassure == "FDI financial flows - total") %>% 
+  mutate(Partner = "United States",
+         US_FDI = as.numeric(US_FDI),
+         Year = as.numeric(Year)) %>% 
+  select(Country, Year, US_FDI) 
+
+
+
+```
+
+# Other Control Data + Cleaning 
+```{r}
+ 
+#GDP
+GDP_df_raw <- read_csv("Data/3d72806c-2e08-4ad9-9e03-d17bafe37855_Data.csv")
+
+GDP_df <- GDP_df_raw %>% 
+  select(!c(`Series Name`, `Series Code`, `2023 [YR2023]`)) %>% 
+  rename(Country = `Country Name`,
+         Code = `Country Code`,
+         "2011" = "2011 [YR2011]",
+         "2012" = "2012 [YR2012]",
+         "2013" = "2013 [YR2013]",
+         "2014" = "2014 [YR2014]",
+         "2015" = "2015 [YR2015]",
+         "2016" = "2016 [YR2016]",
+         "2017" = "2017 [YR2017]",
+         "2018" = "2018 [YR2018]",
+         "2019" = "2019 [YR2019]",
+         "2020" = "2020 [YR2020]",
+         "2021" = "2021 [YR2021]",
+         "2022" = "2022 [YR2022]") %>% 
+  filter(Code %in% c("BRN", "KHM", "IDN", "LAO", "MYS", "MMR", "PHL",
+                      "SGP", "THA", "VNM")) %>% 
+  mutate(Country = dplyr::recode(Country, "Brunei Darussalam" = "Brunei"),
+         Country = dplyr::recode(Country, "Lao PDR" = "Lao"),
+         Country = dplyr::recode(Country, "Viet Nam" = "Vietnam"),) %>% 
+  pivot_longer(
+    cols = starts_with("2"),  
+    names_to = "Year",            
+    values_to = "GDP"           
+  ) %>% 
+  mutate(GDP = as.numeric(GDP),
+    GDP = GDP / 1e6,
+    Year = as.numeric(Year)) %>% 
+  filter(GDP != 2023)
+
+
+# Political Stability 
+Stability_df_raw <- read_csv("Data/6f289ab4-bacf-4de9-886b-e6ca1de98d09_Data.csv")
+
+Stability_df <- Stability_df_raw %>% 
+  select(!c(`Series Name`, `Series Code`)) %>% 
+  rename(Country = `Country Name`,
+         Code = `Country Code`,
+         "2011" = "2011 [YR2011]",
+         "2012" = "2012 [YR2012]",
+         "2013" = "2013 [YR2013]",
+         "2014" = "2014 [YR2014]",
+         "2015" = "2015 [YR2015]",
+         "2016" = "2016 [YR2016]",
+         "2017" = "2017 [YR2017]",
+         "2018" = "2018 [YR2018]",
+         "2019" = "2019 [YR2019]",
+         "2020" = "2020 [YR2020]",
+         "2021" = "2021 [YR2021]",
+         "2022" = "2022 [YR2022]") %>% 
+  filter(Code %in% c("BRN", "KHM", "IDN", "LAO", "MYS", "MMR", "PHL",
+                      "SGP", "THA", "VNM")) %>% 
+  mutate(Country = dplyr::recode(Country, "Brunei Darussalam" = "Brunei"),
+         Country = dplyr::recode(Country, "Lao PDR" = "Lao"),
+         Country = dplyr::recode(Country, "Viet Nam" = "Vietnam")) %>% 
+  pivot_longer(
+    cols = starts_with("2"),  
+    names_to = "Year",            
+    values_to = "Stab"           
+  ) %>% 
+   mutate(Stab = as.numeric(Stab),
+          Year = as.numeric(Year))
+
+
+# Democracy Index
+Dem_df_raw <- read_csv("Data/democracy-index-eiu.csv")
+
+Dem_df <- Dem_df_raw %>% 
+  filter(Code %in% c("BRN", "KHM", "IDN", "LAO", "MYS", "MMR", "PHL",
+                      "SGP", "THA", "VNM"),
+         Year >= 2011 & Year <= 2022
+         )
+
+
+Dem_df_raw <- read_excel("Data/FH-FIW.xlsx") 
+  
+
+Dem_df <- Dem_df_raw %>% 
+  filter(`Economy ISO3` %in% c("BRN", "KHM", "IDN", "LAO", "MYS", "MMR", "PHL",
+                      "SGP", "THA", "VNM"),
+         `Indicator ID`== "FH.FIW.Status") %>% 
+  select(`Economy ISO3`, `Economy Name`, "2011", "2012", "2013", "2014", "2015", "2016", "2017",
+         "2018", "2019", "2020", "2021", "2022") %>% 
+  mutate("Code" = `Economy ISO3`,
+         "Country" = `Economy Name`) %>% 
+  pivot_longer(
+    cols = starts_with("2"),  
+    names_to = "Year",            
+    values_to = "Freedom") %>% 
+  select("Code", "Country", "Year", "Freedom") %>% 
+  mutate(Country = dplyr::recode(Country, "Brunei Darussalam" = "Brunei"),
+         Country = dplyr::recode(Country, "Lao PDR" = "Lao"),
+         Year = as.numeric(Year)
+         ) 
+
+
+h1_m2 <- df_trade_dependency %>% 
+  left_join(GDP_df, by = c("Country", "Year"))
+h1_m3 <- h1_m2 %>% 
+  left_join(Stability_df, by = c("Country", "Year", "Code"))
+h1 <- h1_m3 %>% 
+  left_join(Dem_df, by = c("Country", "Year", "Code"))
+
+h1 <- h1 %>% 
+  mutate("Dispute" = ifelse(Country %in% c("Brunei Darussalam", "Indonesia", "Malaysia",
+                                           "Philippines", "Vietnam"), 1, 0),
+         "Trump" = ifelse(Year >= 2017, 1, 0)
+         )
+
+
+```
+
+
+# H1: Trade Dependece
+```{r}
+h1_ch <- h1 %>% 
+  filter(Partner == "China, P.R.: Mainland") %>% 
+  left_join(FDI_US, by = c("Country", "Year")) 
+
+h1_ch$US_FDI <- na.approx(h1_ch$US_FDI, na.rm = FALSE)
+
+h1_us <- h1 %>% 
+  filter(Partner == "United States") %>% 
+  left_join(FDI_China, by = c("Country", "Year")) 
+
+#h1_ch$Country <- as.factor(h1_ch$Country)
+
+#h1_us$Country <- as.factor(h1_us$Country)
+#h1_us <- h1_us %>% 
+  #mutate(Country = relevel(Country, ref = "Indonesia"))
+
+
+summary(lm(trade_dependency ~ Trump + GDP + Stab + Freedom + US_FDI + Country + Date, data = h1_ch))
+summary(lm(trade_dependency ~ Trump + GDP + Stab + Freedom +  China_FDI + Country + Date, data = h1_us))
+
+
+
+ggplot(h1_ch, aes(x = Date, y = trade_dependency, color = Country)) +
+  geom_smooth() +
+  geom_vline(xintercept = as.Date(c("2017-01-01", "2020-01-01")), 
+             linetype = "solid", color = "black") +
+  labs(title = "Predicted Trade Dependency with the China Over Time by Country",
+       x = NULL,
+       y = "Predicted Trade Dependency\n(monthly trade with China/All Trade)") +
+  theme_minimal()
+
+
+ggplot(h1_us, aes(x = Date, y = trade_dependency, color = Country)) +
+  geom_smooth() +
+  geom_vline(xintercept = as.Date(c("2017-01-01", "2020-01-01")), 
+             linetype = "solid", color = "black") +
+  labs(title = "Predicted Trade Dependency with the United States Over Time by Country",
+       x = NULL,
+       y = "Predicted Trade Dependency\n(monthly trade with US/All Trade)") +
+  theme_minimal()
+```
+
+
+# H3: UN VOTES (Run before H2)
+```{r}
+
+# Setup, cleaning, and subsetting commented out do to size of "Agree" data. 
+
+#Agree <- read.csv("Data/AgreementScoresAll_Sep2023.csv")
+
+#h1_ch_2 <- h1_ch %>%
+#  group_by(Year) %>%
+#  mutate(trade_dependency_yearly_ch = mean(trade_dependency, na.rm = TRUE)) %>% 
+#   select(Code, Country, trade_dependency_yearly_ch, Year, GDP, Stab, Freedom, Trump)
+
+# h1_us_2 <- h1_us %>%
+# group_by(Country, Year) %>%
+#  mutate(trade_dependency_yearly_us = mean(trade_dependency, na.rm = TRUE)) %>% 
+#  select(Code, Country, trade_dependency_yearly_us, Year, GDP, Stab, Freedom, Trump)
+
+# #h1_2 <- h1_ch_2 %>% 
+#   left_join(h1_us_2) %>% 
+#   distinct()
+
+# Agree$countryname_1 = countrycode(Agree$ccode1, origin = "cown", destination = "iso3c")
+# Agree$countryname_2 = countrycode(Agree$ccode2, origin = "cown", destination = "iso3c")
+
+# Agree_US <- Agree %>% 
+#   filter(countryname_1 == "USA",
+#          countryname_2 %in% c("BRN", "KHM", "IDN", "LAO", "MYS", "MMR", "PHL",
+#                       "SGP", "THA", "VNM"),
+#          year >= 2011) %>% 
+#   mutate(Code = countryname_2,
+#          Year = year)
+
+# write.csv(Agree_US,
+#           file = "Agree_US.csv",
+#           row.names = FALSE)   
+
+
+Agree_US <- read.csv("Data/Agree_US.csv")
+
+
+h2 <- Agree_US %>% 
+  left_join(h1_2, by = c("Code", "Year")) %>% 
+  mutate("Dispute" = ifelse(Country %in% c("Brunei Darussalam", "Indonesia", "Malaysia",
+                                           "Philippines", "Vietnam") & 
+                              Year >= 2018 , 1, 0))
+
+UN <- feols(IdealPointDistance ~ Dispute + GDP + Stab + Freedom + as.factor(Country) | + year , data = h2)
+
+
+h2 %>% 
+  mutate("line_type" = ifelse(Country %in% c("Brunei", "Indonesia", "Malaysia",
+                                           "Philippines", "Vietnam"), "dashed", "solid")) %>% 
+ggplot(aes(x = Year, y = IdealPointDistance, color = Country, linetype = line_type)) +
+  geom_line() +
+  geom_point()+
+  labs(title = " Figure 2: Voting simularity with the United States over Time",
+       x = "Year",
+       y = "Distance in Ideal Point of the US") +
+  geom_vline(xintercept = 2018, linetype = "dashed", color = "black") +
+  scale_x_continuous(breaks = seq(min(h2$Year), max(h2$Year), by = 1)) +
+  scale_linetype_manual(values = c("solid" = "solid", "dashed" = "dashed"),
+                        labels = c("Dispute", "No Dispute"),
+                        name = "Treatment Group") +
+  theme_minimal()
+
+UN
+```
+
+
+# H2: Miltary spending 
+```{r}
+Mil_df_raw <- read_excel("Data/SIPRI-Milex-data-1948-2023.xlsx", sheet = "Share of GDP")
+
+Mil_df_raw_2 <- Mil_df_raw %>% slice(-(1:4))
+
+new_colnames_mil <- as.character(unlist(Mil_df_raw_2[1, ]))
+
+Mil_df_raw_2 <- Mil_df_raw_2[-1, ]
+
+colnames(Mil_df_raw_2) <- new_colnames_mil
+
+Mil_df_raw_3 <- Mil_df_raw_2 %>% slice(-(1))
+  
+Mil_df <- Mil_df_raw_3 %>% 
+  select(Country, "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019",
+         "2020", "2021", "2022") %>% 
+  filter(Country %in% c("Brunei", "Cambodia", "Indonesia", "Laos", "Malaysia", "Myanmar",
+                        "Philippines", "Singapore", "Thailand", "Viet Nam")) %>% pivot_longer(
+    cols = starts_with("2"),  
+    names_to = "Year",            
+    values_to = "mil"           
+  ) %>% 
+   mutate(mil = as.numeric(mil) * 100,
+          Year = as.numeric(Year))
+
+Mil_df <- Mil_df %>% 
+  mutate(Country = dplyr::recode(Country, `Viet Nam` = "Vietnam"))
+
+
+h1_3 <- h1_2 %>% 
+  select(Code, Country, Year, Stab, Freedom, Trump)
+
+h3 <- Mil_df %>% 
+  left_join(h1_3, by = join_by(Country, Year)) %>% 
+  mutate(Country = as.factor(Country),
+         "Dispute" = ifelse(Country %in% c("Brunei Darussalam", "Indonesia", "Malaysia",
+                                           "Philippines", "Vietnam") & 
+                              Year >= 2018 , 1, 0))
+
+
+ML <- feols(mil ~ Dispute + Stab + Freedom + as.factor(Country) |  Year , data = h3)
+
+ML
+
+
+h3 %>% 
+  mutate("line_type" = ifelse(Country %in% c("Brunei", "Indonesia", "Malaysia",
+                                           "Philippines", "Vietnam"), "dashed", "solid")) %>% 
+ggplot(aes(x = Year, y = mil, color = Country, linetype = line_type)) +
+  geom_line() +
+  geom_point()+
+  geom_vline(xintercept = 2018, linetype = "dashed", color = "black") +
+  labs(title = "Figure 1: Miltary Expendture as share of GDP over Time",
+       x = "Year",
+       y = "% of GDP") +
+  scale_x_continuous(breaks = seq(min(h3$Year), max(h3$Year), by = 1)) +
+  scale_linetype_manual(values = c("solid" = "solid", "dashed" = "dashed"),
+                        labels = c("Dispute", "No Dispute"),
+                        name = "Treatment Group") +
+  theme_minimal()
+
+
+```
